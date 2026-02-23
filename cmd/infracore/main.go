@@ -290,8 +290,151 @@ func handlePlan(args []string, renderer *output.Renderer, planEngine *planner.En
 	}
 	description := strings.Join(args, " ")
 	plan := planEngine.CreatePlan("Execution Plan", description)
+	if !populatePlanFromDescription(planEngine, plan, description) {
+		fmt.Printf("📋 Plan requested: %s\n\nCould not auto-generate. Use 'infracore skills list'.\n", description)
+		return
+	}
+	fmt.Print(renderer.RenderPlan(plan))
+}
+
+func populatePlanFromDescription(planEngine *planner.Engine, plan *core.Plan, description string) bool {
 	dl := strings.ToLower(description)
+	containsAny := func(values ...string) bool {
+		for _, value := range values {
+			if strings.Contains(dl, value) {
+				return true
+			}
+		}
+		return false
+	}
+	isDeployIntent := containsAny("deploy", "launch", "provision", "create", "rollout")
+	profile := "standard"
+	if containsAny("secure", "hardened", "encrypted", "private") {
+		profile = "secure"
+	}
+	if containsAny("cpu optimized", "cpu optimised", "compute optimized", "compute optimised", "high cpu") {
+		profile = "cpu_optimized"
+	}
+	service := "generic"
 	switch {
+	case containsAny("eks"):
+		service = "eks"
+	case containsAny("ec2"):
+		service = "ec2"
+	case containsAny("rds"):
+		service = "rds"
+	case containsAny("lambda"):
+		service = "lambda"
+	case containsAny("ecs"):
+		service = "ecs"
+	case containsAny("gke"):
+		service = "gke"
+	case containsAny("gce", "compute engine", "google compute"):
+		service = "compute"
+	case containsAny("cloud sql", "sql"):
+		service = "sql"
+	case containsAny("aks"):
+		service = "aks"
+	case containsAny("azure vm", " vm "):
+		service = "vm"
+	}
+
+	switch {
+	case containsAny("deploy eks", "launch eks") || (strings.Contains(dl, "eks") && isDeployIntent):
+		_ = planEngine.AddStep(plan, "aws.eks.deploy", "Deploy workload on EKS", map[string]interface{}{
+			"cluster_name":       "main-cluster",
+			"namespace":          "default",
+			"deployment":         "app",
+			"image":              "app:latest",
+			"node_instance_type": "m6i.large",
+			"min_nodes":          "2",
+			"max_nodes":          "6",
+		})
+		_ = planEngine.AddStep(plan, "aws.sg.audit", "Validate security groups for EKS networking", nil)
+	case strings.Contains(dl, "ec2") && containsAny("cpu optimized", "cpu optimised", "compute optimized", "compute optimised", "high cpu"):
+		_ = planEngine.AddStep(plan, "aws.ec2.deploy.cpu_optimized", "Deploy EC2 workload with CPU-optimized profile", map[string]interface{}{
+			"name":          "cpu-app",
+			"instance_type": "c7i.large",
+		})
+		_ = planEngine.AddStep(plan, "aws.cloudwatch.query", "Query CPU metrics and logs post-deploy", map[string]interface{}{
+			"log_group": "/aws/ec2/cpu-app",
+			"query":     "fields @timestamp, @message | sort @timestamp desc | limit 20",
+		})
+	case strings.Contains(dl, "rds") && containsAny("secure", "hardened", "private", "encrypted", "launch", "deploy", "provision", "create"):
+		_ = planEngine.AddStep(plan, "aws.rds.launch.secure", "Launch secure RDS instance", map[string]interface{}{
+			"db_identifier":         "app-db",
+			"engine":                "postgres",
+			"instance_class":        "db.m6i.large",
+			"storage_encrypted":     "true",
+			"publicly_accessible":   "false",
+			"deletion_protection":   "true",
+			"backup_retention_days": "7",
+		})
+		_ = planEngine.AddStep(plan, "aws.sg.audit", "Audit DB security groups for restricted ingress", nil)
+	case strings.Contains(dl, "gke") && isDeployIntent:
+		_ = planEngine.AddStep(plan, "gcp.gke.deploy", "Deploy workload on GKE", map[string]interface{}{
+			"cluster_name": "main-gke",
+			"location":     "us-central1",
+			"namespace":    "default",
+			"deployment":   "app",
+			"image":        "gcr.io/project/app:latest",
+		})
+	case containsAny("gce", "compute engine", "google compute") && containsAny("cpu optimized", "cpu optimised", "compute optimized", "compute optimised", "high cpu"):
+		_ = planEngine.AddStep(plan, "gcp.gce.deploy.cpu_optimized", "Deploy GCE workload with CPU-optimized profile", map[string]interface{}{
+			"instance":     "cpu-app",
+			"machine_type": "c3-standard-4",
+			"zone":         "us-central1-a",
+		})
+	case containsAny("cloud sql", "gcp sql") && containsAny("secure", "hardened", "private", "encrypted", "launch", "deploy", "provision", "create"):
+		_ = planEngine.AddStep(plan, "gcp.sql.deploy.secure", "Launch secure Cloud SQL instance", map[string]interface{}{
+			"instance":         "app-db",
+			"database_version": "POSTGRES_15",
+			"tier":             "db-custom-2-7680",
+			"region":           "us-central1",
+			"private_ip":       "true",
+			"backup_enabled":   "true",
+		})
+	case strings.Contains(dl, "aks") && isDeployIntent:
+		_ = planEngine.AddStep(plan, "azure.aks.deploy", "Deploy workload on AKS", map[string]interface{}{
+			"resource_group": "rg-main",
+			"cluster_name":   "aks-main",
+			"namespace":      "default",
+			"deployment":     "app",
+			"image":          "app:latest",
+		})
+	case containsAny("azure vm", "vm") && containsAny("cpu optimized", "cpu optimised", "compute optimized", "compute optimised", "high cpu"):
+		_ = planEngine.AddStep(plan, "azure.vm.deploy.cpu_optimized", "Deploy Azure VM with CPU-optimized profile", map[string]interface{}{
+			"resource_group": "rg-main",
+			"vm_name":        "cpu-app",
+			"vm_size":        "Standard_F4s_v2",
+		})
+	case containsAny("azure sql", "sql database", "sql db") && containsAny("secure", "hardened", "private", "encrypted", "launch", "deploy", "provision", "create"):
+		_ = planEngine.AddStep(plan, "azure.sql.deploy.secure", "Launch secure Azure SQL database", map[string]interface{}{
+			"resource_group":        "rg-main",
+			"server_name":           "sql-main",
+			"database_name":         "appdb",
+			"service_objective":     "S2",
+			"private_endpoint":      "true",
+			"backup_retention_days": "7",
+		})
+	case strings.Contains(dl, "aws") && isDeployIntent:
+		_ = planEngine.AddStep(plan, "aws.service.deploy", "Deploy AWS service from natural-language request", map[string]interface{}{
+			"service":     service,
+			"profile":     profile,
+			"environment": "staging",
+		})
+	case containsAny("gcp", "google cloud") && isDeployIntent:
+		_ = planEngine.AddStep(plan, "gcp.service.deploy", "Deploy GCP service from natural-language request", map[string]interface{}{
+			"service":     service,
+			"profile":     profile,
+			"environment": "staging",
+		})
+	case strings.Contains(dl, "azure") && isDeployIntent:
+		_ = planEngine.AddStep(plan, "azure.service.deploy", "Deploy Azure service from natural-language request", map[string]interface{}{
+			"service":     service,
+			"profile":     profile,
+			"environment": "staging",
+		})
 	case strings.Contains(dl, "deploy"):
 		_ = planEngine.AddStep(plan, "k8s.deploy", "Deploy workload", map[string]interface{}{"namespace": "default", "deployment": "app", "image": "app:latest"})
 		_ = planEngine.AddStep(plan, "k8s.rollout.status", "Watch rollout", map[string]interface{}{"namespace": "default", "deployment": "app"})
@@ -303,10 +446,10 @@ func handlePlan(args []string, renderer *output.Renderer, planEngine *planner.En
 		_ = planEngine.AddStep(plan, "aws.cost.report", "Cost report", map[string]interface{}{"granularity": "MONTHLY"})
 		_ = planEngine.AddStep(plan, "aws.rightsizing.suggest", "Rightsizing", nil)
 	default:
-		fmt.Printf("📋 Plan requested: %s\n\nCould not auto-generate. Use 'infracore skills list'.\n", description)
-		return
+		return false
 	}
-	fmt.Print(renderer.RenderPlan(plan))
+
+	return true
 }
 
 // ─── State ────────────────────────────────────────────────────

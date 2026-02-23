@@ -116,6 +116,9 @@ func TestLoadBuiltins(t *testing.T) {
 	// Verify key skills exist
 	keySkills := []string{
 		"aws.ec2.list", "aws.ec2.scale", "aws.s3.audit",
+		"aws.eks.deploy", "aws.ec2.deploy.cpu_optimized", "aws.rds.launch.secure", "aws.service.deploy",
+		"gcp.gke.deploy", "gcp.gce.deploy.cpu_optimized", "gcp.sql.deploy.secure", "gcp.service.deploy",
+		"azure.aks.deploy", "azure.vm.deploy.cpu_optimized", "azure.sql.deploy.secure", "azure.service.deploy",
 		"k8s.deploy", "k8s.rollback",
 		"terraform.plan", "terraform.apply",
 		"gcp.gce.snapshot", "azure.vm.resize",
