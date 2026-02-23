@@ -21,8 +21,11 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/parth14193/ownbot/pkg/agents"
 	"github.com/parth14193/ownbot/pkg/compliance"
 	"github.com/parth14193/ownbot/pkg/config"
 	"github.com/parth14193/ownbot/pkg/core"
@@ -94,6 +97,8 @@ func main() {
 		handleConfig(os.Args[2:], cfg)
 	case "rbac":
 		handleRBAC(os.Args[2:], rbacEngine)
+	case "agent":
+		handleAgent(os.Args[2:], renderer)
 	case "version":
 		fmt.Printf("InfraCore Agent Framework v%s\n", version)
 	case "help", "--help", "-h":
@@ -135,6 +140,7 @@ PLATFORM COMMANDS:
   config show      Show current configuration
   config init      Generate sample config file
   rbac show        Show RBAC roles and users
+  agent simulate   Run multi-agent controller simulation
 
 OPTIONS:
   --provider=<p>      Filter by provider
@@ -150,7 +156,8 @@ EXAMPLES:
   infracore compliance audit CIS
   infracore drift detect
   infracore runbook run deployment-rollback
-  infracore health check`)
+  infracore health check
+  infracore agent simulate --urgency=P0 --service=checkout-api --signal=latency --symptoms=5xx,timeout`)
 }
 
 // ─── Skills ───────────────────────────────────────────────────
@@ -626,6 +633,84 @@ func handleRBAC(args []string, engine *rbac.Engine) {
 	fmt.Print(engine.Render())
 }
 
+// --- Agent --------------------------------------------------
+
+func handleAgent(args []string, renderer *output.Renderer) {
+	if len(args) == 0 {
+		fmt.Println("Usage: infracore agent simulate [--env=<env>] [--urgency=<P0|P1|P2>] [--service=<name>] [--signal=<type>] [--symptoms=a,b]")
+		return
+	}
+	switch args[0] {
+	case "simulate":
+		handleAgentSimulate(args[1:], renderer)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown agent subcommand: %s\n", args[0])
+	}
+}
+
+func handleAgentSimulate(args []string, renderer *output.Renderer) {
+	env := extractFlag(args, "--env")
+	if env == "" {
+		env = "staging"
+	}
+	urgency := extractFlag(args, "--urgency")
+	if urgency == "" {
+		urgency = "P2"
+	}
+	service := extractFlag(args, "--service")
+	if service == "" {
+		service = "platform-api"
+	}
+	signal := extractFlag(args, "--signal")
+	if signal == "" {
+		signal = "latency"
+	}
+	symptomRaw := extractFlag(args, "--symptoms")
+	var symptoms []string
+	if symptomRaw != "" {
+		for _, value := range strings.Split(symptomRaw, ",") {
+			v := strings.TrimSpace(value)
+			if v != "" {
+				symptoms = append(symptoms, v)
+			}
+		}
+	}
+
+	controller := agents.NewController(nil)
+	ctx := agents.EvaluationContext{
+		Environment: env,
+		Urgency:     urgency,
+		Service:     service,
+		SignalType:  signal,
+		Symptoms:    symptoms,
+		Timestamp:   time.Now(),
+	}
+	decision := controller.Decide(ctx)
+
+	fmt.Printf("MULTI-AGENT DECISION (%s)\n", decision.Controller)
+	headers := []string{"Agent", "Summary", "Risk", "Skills", "NeedsApproval"}
+	rows := make([][]string, 0, len(decision.SelectedProposals))
+	for _, p := range decision.SelectedProposals {
+		rows = append(rows, []string{
+			string(p.Agent),
+			p.Summary,
+			p.RiskLevel.String(),
+			strings.Join(p.Skills, ","),
+			fmt.Sprintf("%t", p.RequiresConfirmation),
+		})
+	}
+	if len(rows) > 0 {
+		fmt.Print(renderer.RenderTable(headers, rows))
+	} else {
+		fmt.Println("No proposals selected.")
+	}
+	fmt.Printf("Requires human approval: %t\n", decision.RequiresHumanApproval)
+	fmt.Println("Reasoning:")
+	for _, r := range decision.Reasoning {
+		fmt.Printf("  - %s\n", r)
+	}
+}
+
 // ─── Helpers ──────────────────────────────────────────────────
 
 func extractFlag(args []string, flag string) string {
@@ -647,7 +732,7 @@ func parseParams(args []string) map[string]interface{} {
 		if strings.Contains(arg, "=") && !strings.HasPrefix(arg, "--") {
 			parts := strings.SplitN(arg, "=", 2)
 			if len(parts) == 2 {
-				params[parts[0]] = parts[1]
+				params[parts[0]] = parseParamValue(parts[1])
 			}
 		}
 	}
@@ -655,9 +740,23 @@ func parseParams(args []string) map[string]interface{} {
 		if arg == "--param" && i+1 < len(args) {
 			parts := strings.SplitN(args[i+1], "=", 2)
 			if len(parts) == 2 {
-				params[parts[0]] = parts[1]
+				params[parts[0]] = parseParamValue(parts[1])
 			}
 		}
 	}
 	return params
+}
+
+func parseParamValue(value string) interface{} {
+	v := strings.TrimSpace(value)
+	if strings.EqualFold(v, "true") {
+		return true
+	}
+	if strings.EqualFold(v, "false") {
+		return false
+	}
+	if i, err := strconv.Atoi(v); err == nil {
+		return i
+	}
+	return value
 }

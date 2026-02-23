@@ -94,3 +94,67 @@ func TestPolicyAppliesPatternMatching(t *testing.T) {
 		t.Error("should not match aws.s3.* for ec2 skill")
 	}
 }
+
+func TestRequireExplicitProdConfirmation(t *testing.T) {
+	e := policy.NewEngine(policy.EnforcementDeny)
+	e.LoadBuiltins()
+
+	skill := &core.Skill{Name: "custom.deploy", RiskLevel: core.RiskHigh}
+	baseParams := map[string]interface{}{
+		"desired_capacity": 3,
+		"_change_ticket":   "CHG-1234",
+		"_rollback_plan":   "rollback to prior deployment revision",
+	}
+	result := e.Evaluate(skill, baseParams, "production")
+	if result.Passed {
+		t.Error("production mutation without _confirmed should be denied")
+	}
+
+	baseParams["_confirmed"] = true
+	result = e.Evaluate(skill, baseParams, "production")
+	if !result.Passed {
+		t.Error("production mutation with _confirmed should pass explicit confirmation policy")
+	}
+}
+
+func TestProdCapacityImpactLimit(t *testing.T) {
+	e := policy.NewEngine(policy.EnforcementDeny)
+	e.LoadBuiltins()
+
+	skill := &core.Skill{Name: "custom.deploy", RiskLevel: core.RiskHigh}
+	baseParams := map[string]interface{}{
+		"_confirmed":      true,
+		"_change_ticket":  "CHG-1234",
+		"_rollback_plan":  "rollback to prior deployment revision",
+		"_capacity_impact_pct": 25,
+	}
+	result := e.Evaluate(skill, baseParams, "prod")
+	if result.Passed {
+		t.Error("capacity impact >20% in production should be denied")
+	}
+
+	baseParams["_capacity_impact_pct"] = 20
+	result = e.Evaluate(skill, baseParams, "prod")
+	if !result.Passed {
+		t.Error("capacity impact <=20% should be allowed")
+	}
+}
+
+func TestRequireChangeTicketAndRollbackPlan(t *testing.T) {
+	e := policy.NewEngine(policy.EnforcementDeny)
+	e.LoadBuiltins()
+
+	skill := &core.Skill{Name: "custom.deploy", RiskLevel: core.RiskHigh}
+	params := map[string]interface{}{"_confirmed": true}
+	result := e.Evaluate(skill, params, "production")
+	if result.Passed {
+		t.Error("production mutation without change ticket and rollback should be denied")
+	}
+
+	params["_change_ticket"] = "CHG-8888"
+	params["_rollback_plan"] = "rollback deployment to previous revision"
+	result = e.Evaluate(skill, params, "production")
+	if !result.Passed {
+		t.Error("production mutation with change ticket and rollback metadata should pass")
+	}
+}

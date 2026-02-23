@@ -191,6 +191,9 @@ func (e *Engine) LoadBuiltins() {
 		deploymentRollbackRunbook(),
 		secretRotationRunbook(),
 		incidentResponseRunbook(),
+		p0IncidentResponseRunbook(),
+		reliabilityGuardrailRunbook(),
+		securityComplianceGovernanceRunbook(),
 	}
 	for _, rb := range builtins {
 		_ = e.Register(rb)
@@ -297,6 +300,77 @@ func incidentResponseRunbook() *Runbook {
 			NotifyChannel: "slack-engineering",
 			WaitBefore:    30 * time.Minute,
 			Message:       "Incident not resolved after 30 minutes — escalating to engineering leads",
+		},
+	}
+}
+
+func p0IncidentResponseRunbook() *Runbook {
+	return &Runbook{
+		Name:        "p0-incident-response",
+		Description: "P0 incident workflow: immediate acknowledgement, blast-radius analysis, and guided mitigation",
+		Trigger:     TriggerAlert,
+		Tags:        []string{"incident", "p0", "production", "runbook"},
+		Steps: []Step{
+			{Name: "acknowledge-within-60s", Type: StepSkill, SkillName: "pagerduty.incident.status", Description: "Acknowledge and verify active P0 incident metadata"},
+			{Name: "page-oncall", Type: StepNotification, Description: "Page primary/secondary on-call", Notification: "P0 declared: paging on-call responders now"},
+			{Name: "open-incident-channel", Type: StepNotification, Description: "Open dedicated comms channel", Notification: "Opening #inc-p0 bridge and posting live status thread"},
+			{Name: "assess-blast-radius", Type: StepManual, Description: "Identify impacted services, regions, and customer-facing surface area", Timeout: 10 * time.Minute},
+			{Name: "pull-runbook", Type: StepManual, Description: "Load closest service runbook from ~/.infrabot/runbooks/", Timeout: 5 * time.Minute},
+			{Name: "collect-signals", Type: StepSkill, SkillName: "datadog.alert.list", Description: "Gather active alerts and correlated events"},
+			{Name: "mitigate", Type: StepManual, Description: "Execute safest reversible mitigation (rollback, failover, or controlled scale-up)", Timeout: 30 * time.Minute},
+			{Name: "verify-recovery", Type: StepManual, Description: "Confirm SLO and user impact recovery", Timeout: 10 * time.Minute},
+			{Name: "draft-postmortem", Type: StepNotification, Description: "Create postmortem draft", Notification: "Generating timeline and postmortem draft for review"},
+		},
+		Escalation: &Escalation{
+			NotifyChannel: "slack-incidents",
+			WaitBefore:    15 * time.Minute,
+			Message:       "P0 still unresolved after 15 minutes - escalate to incident commander and platform lead",
+		},
+	}
+}
+
+func reliabilityGuardrailRunbook() *Runbook {
+	return &Runbook{
+		Name:        "reliability-guardrail-loop",
+		Description: "Continuous SRE loop for SLO burn-rate checks and bounded auto-remediation",
+		Trigger:     TriggerSchedule,
+		Tags:        []string{"sre", "reliability", "automanage"},
+		Steps: []Step{
+			{Name: "collect-alerts", Type: StepSkill, SkillName: "datadog.alert.list", Description: "Collect current alert surface"},
+			{Name: "evaluate-slo", Type: StepSkill, SkillName: "datadog.slo.burnrate", Description: "Evaluate error budget consumption", Params: map[string]interface{}{"slo_id": "core-api", "window": "1h"}},
+			{Name: "capacity-forecast", Type: StepSkill, SkillName: "platform.capacity.forecast", Description: "Forecast saturation risk", Params: map[string]interface{}{"service": "core-api", "horizon": "7d"}},
+			{Name: "gated-autoremediate", Type: StepManual, Description: "If thresholds are breached, approve bounded remediation with _confirmed and rollback metadata", Timeout: 10 * time.Minute},
+			{Name: "execute-autoremediate", Type: StepSkill, SkillName: "platform.reliability.autoremediate", Description: "Execute approved remediation playbook", Params: map[string]interface{}{"playbook": "latency-spike-v1", "target": "core-api", "environment": "staging"}},
+			{Name: "verify-post-action", Type: StepSkill, SkillName: "prometheus.query", Description: "Verify latency and error-rate recovery", Params: map[string]interface{}{"query": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))", "window": "15m"}},
+			{Name: "timeline", Type: StepSkill, SkillName: "sre.incident.timeline.generate", Description: "Persist operational timeline artifact", Params: map[string]interface{}{"incident_id": "auto-remediation", "start_time": "now-30m"}},
+		},
+		Escalation: &Escalation{
+			NotifyChannel: "slack-sre",
+			WaitBefore:    20 * time.Minute,
+			Message:       "Reliability guardrail loop needs human intervention after failed remediation",
+		},
+	}
+}
+
+func securityComplianceGovernanceRunbook() *Runbook {
+	return &Runbook{
+		Name:        "security-compliance-governance-cycle",
+		Description: "Daily governance cycle for security posture, compliance evidence, and policy drift",
+		Trigger:     TriggerSchedule,
+		Tags:        []string{"security", "compliance", "governance", "automanage"},
+		Steps: []Step{
+			{Name: "cloudtrail-audit", Type: StepSkill, SkillName: "cloudtrail.event.search", Description: "Search privileged API calls", Params: map[string]interface{}{"lookup_attribute": "EventName", "value": "AuthorizeSecurityGroupIngress"}},
+			{Name: "least-privilege-diff", Type: StepSkill, SkillName: "security.iam.least_privilege.diff", Description: "Detect IAM drift from baseline", Params: map[string]interface{}{"principal_arn": "arn:aws:iam::123456789012:role/platform-admin", "policy_baseline": "policies/platform-admin.json"}},
+			{Name: "secret-exposure-scan", Type: StepSkill, SkillName: "security.secrets.exposure.scan", Description: "Scan repo and logs for leaked credentials", Params: map[string]interface{}{"scope": "both", "target": "platform"}},
+			{Name: "collect-evidence", Type: StepSkill, SkillName: "compliance.evidence.collect", Description: "Collect SOC2 evidence package", Params: map[string]interface{}{"framework": "SOC2", "period": "30d"}},
+			{Name: "risk-gate", Type: StepSkill, SkillName: "github.pr.change_risk", Description: "Assess open infra PR risk", Params: map[string]interface{}{"repo": "org/platform", "pr_number": 1}},
+			{Name: "operator-approval", Type: StepManual, Description: "For production changes, validate _change_ticket and rollback references", Timeout: 10 * time.Minute},
+			{Name: "record-governance-approval", Type: StepSkill, SkillName: "governance.change.approve", Description: "Record approved governance decision", Params: map[string]interface{}{"change_ticket": "CHG-0000", "approver": "ops-lead", "environment": "production"}},
+		},
+		Escalation: &Escalation{
+			NotifyChannel: "slack-security",
+			WaitBefore:    12 * time.Hour,
+			Message:       "Governance cycle found unresolved critical controls",
 		},
 	}
 }

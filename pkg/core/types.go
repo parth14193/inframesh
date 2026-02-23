@@ -62,6 +62,7 @@ const (
 	ProviderArgoCD     Provider = "argocd"
 	ProviderDatadog    Provider = "datadog"
 	ProviderGrafana    Provider = "grafana"
+	ProviderPrometheus Provider = "prometheus"
 	ProviderPagerDuty  Provider = "pagerduty"
 	ProviderVault      Provider = "vault"
 	ProviderTrivy      Provider = "trivy"
@@ -83,6 +84,8 @@ const (
 	CategoryDeployment    SkillCategory = "deployment"
 	CategorySecurity      SkillCategory = "security"
 	CategoryObservability SkillCategory = "observability"
+	CategoryReliability   SkillCategory = "reliability"
+	CategoryGovernance    SkillCategory = "governance"
 	CategoryCost          SkillCategory = "cost"
 	CategoryCICD          SkillCategory = "cicd"
 )

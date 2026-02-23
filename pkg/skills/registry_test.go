@@ -125,6 +125,8 @@ func TestLoadBuiltins(t *testing.T) {
 		"datadog.alert.list", "trivy.scan",
 		"github.actions.trigger", "cloudflare.dns.manage",
 		"infracost.estimate",
+		"prometheus.query", "datadog.slo.burnrate", "platform.reliability.autoremediate",
+		"governance.change.approve", "compliance.evidence.collect",
 	}
 
 	for _, name := range keySkills {
