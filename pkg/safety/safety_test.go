@@ -3,8 +3,8 @@ package safety_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/core"
-	"github.com/parth14193/ownbot/pkg/safety"
+	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/safety"
 )
 
 func TestEvaluateReadOnly(t *testing.T) {

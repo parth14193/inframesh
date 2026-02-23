@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/parth14193/ownbot/pkg/agents"
+	"github.com/parth14193/inframesh/pkg/agents"
 )
 
 func TestControllerCoordinatesAllAgents(t *testing.T) {

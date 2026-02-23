@@ -3,8 +3,8 @@ package rbac_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/core"
-	"github.com/parth14193/ownbot/pkg/rbac"
+	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/rbac"
 )
 
 func TestViewerPermissions(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/parth14193/ownbot/pkg/core"
+	"github.com/parth14193/inframesh/pkg/core"
 )
 
 // Config is the top-level InfraCore configuration.

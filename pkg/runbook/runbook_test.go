@@ -3,7 +3,7 @@ package runbook_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/runbook"
+	"github.com/parth14193/inframesh/pkg/runbook"
 )
 
 func TestLoadBuiltins(t *testing.T) {

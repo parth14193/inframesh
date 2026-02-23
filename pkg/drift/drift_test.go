@@ -3,7 +3,7 @@ package drift_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/drift"
+	"github.com/parth14193/inframesh/pkg/drift"
 )
 
 func TestAnalyzeTerraformPlan(t *testing.T) {

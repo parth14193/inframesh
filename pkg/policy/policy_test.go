@@ -3,8 +3,8 @@ package policy_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/core"
-	"github.com/parth14193/ownbot/pkg/policy"
+	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/policy"
 )
 
 func TestLoadBuiltins(t *testing.T) {

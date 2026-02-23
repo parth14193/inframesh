@@ -3,7 +3,7 @@ package skills
 import (
 	"time"
 
-	"github.com/parth14193/ownbot/pkg/core"
+	"github.com/parth14193/inframesh/pkg/core"
 )
 
 // AzureSkills returns all built-in Azure skill definitions.

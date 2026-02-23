@@ -3,7 +3,7 @@ package compliance_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/compliance"
+	"github.com/parth14193/inframesh/pkg/compliance"
 )
 
 func TestCISAudit(t *testing.T) {
