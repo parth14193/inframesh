@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/parth14193/ownbot/pkg/core"
+	"github.com/parth14193/inframesh/pkg/core"
 )
 
 // Manager manages session-level state for the InfraCore agent.

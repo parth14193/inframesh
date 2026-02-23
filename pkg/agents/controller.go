@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/parth14193/ownbot/pkg/core"
+	"github.com/parth14193/inframesh/pkg/core"
 )
 
 // Controller coordinates all domain agents and emits an execution decision.

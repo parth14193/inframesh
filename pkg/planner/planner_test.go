@@ -3,9 +3,9 @@ package planner_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/core"
-	"github.com/parth14193/ownbot/pkg/planner"
-	"github.com/parth14193/ownbot/pkg/skills"
+	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/planner"
+	"github.com/parth14193/inframesh/pkg/skills"
 )
 
 func setupEngine() (*planner.Engine, *skills.Registry) {

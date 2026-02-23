@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/parth14193/ownbot/pkg/core"
-	"github.com/parth14193/ownbot/pkg/safety"
+	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/safety"
 )
 
 // Executor defines the interface for skill execution.

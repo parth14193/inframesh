@@ -3,8 +3,8 @@ package state_test
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/core"
-	"github.com/parth14193/ownbot/pkg/state"
+	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/state"
 )
 
 func TestNewManager(t *testing.T) {

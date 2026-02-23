@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/parth14193/ownbot/pkg/core"
+	"github.com/parth14193/inframesh/pkg/core"
 )
 
 // Role represents a user role with specific permissions.

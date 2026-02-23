@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/parth14193/ownbot/pkg/resilience"
+	"github.com/parth14193/inframesh/pkg/resilience"
 )
 
 func TestRetrySuccess(t *testing.T) {

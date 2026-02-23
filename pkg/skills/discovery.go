@@ -3,7 +3,7 @@ package skills
 import (
 	"fmt"
 
-	"github.com/parth14193/ownbot/pkg/core"
+	"github.com/parth14193/inframesh/pkg/core"
 )
 
 // Discovery handles dynamic creation and registration of custom skills.

@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/parth14193/ownbot/pkg/planner"
-	"github.com/parth14193/ownbot/pkg/skills"
+	"github.com/parth14193/inframesh/pkg/planner"
+	"github.com/parth14193/inframesh/pkg/skills"
 )
 
 func setupPlanEngine(t *testing.T) *planner.Engine {
