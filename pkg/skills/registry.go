@@ -126,6 +126,7 @@ func (r *Registry) LoadBuiltins() error {
 		SecuritySkills,
 		NetworkingSkills,
 		CostSkills,
+		PlatformAutomanageSkills,
 	}
 
 	for _, loader := range loaders {

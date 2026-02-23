@@ -8,6 +8,51 @@
 
 > An intelligent, modular orchestrator for multi-cloud infrastructure tasks with built-in safety controls, policy enforcement, compliance auditing, drift detection, and operational runbooks.
 
+## InfraBot Core Use Case
+
+InfraCore can be operated in an `InfraBot` mode for agentic infrastructure operations Orchastration:
+
+- Safe by default with staged evaluation before execution.
+- Explicit confirmation gates for production mutations.
+- Blast-radius and rollback-first execution planning.
+- Incident-first workflows with dedicated P0 runbook patterns.
+- Append-only audit trail through session state and action logs.
+
+Recommended operator flow:
+
+1. Confirm environment and scope (`staging` by default).
+2. Observe current state first (`list`, `describe`, `query`, `logs`).
+3. Generate plan and evaluate policy/safety.
+4. For production writes, provide explicit approval (`--param _confirmed=true`).
+5. Execute only reversible mitigation first.
+6. Capture audit entries and incident timeline artifacts.
+
+## Platform Automanage Capability Packs
+
+InfraCore now includes built-in packs for full-platform operations:
+
+- Production Engineering: `terraform.cloud.policy.check`, `github.pr.change_risk`, `platform.capacity.forecast`
+- Observability: `prometheus.query`, `datadog.slo.burnrate`, `datadog.alert.list`, `aws.cloudwatch.query`
+- Infrastructure Management: `k8s.node.cordon`, `k8s.node.drain`, `k8s.pod.restart`, `argocd.sync`, `terraform.apply`
+- Security: `security.iam.least_privilege.diff`, `security.secrets.exposure.scan`, `trivy.scan`, `cloudtrail.event.search`
+- Compliance & Governance: `compliance.evidence.collect`, `governance.change.approve`, production `_change_ticket` + rollback policy gates
+- SRE: `platform.reliability.autoremediate`, `sre.incident.timeline.generate`, `p0-incident-response`, `reliability-guardrail-loop`
+
+## Multi-Agent Control Plane
+
+InfraCore now supports agent-to-agent orchestration with a central decision controller:
+
+- `controller`: synthesizes proposals, enforces approval gates, and records decisions.
+- `sre-agent`: SLO, incident, and remediation proposals.
+- `platform-agent`: deployment and governance proposals.
+- `infra-agent`: cloud and cluster action proposals.
+
+Run a coordination simulation:
+
+```bash
+infracore agent simulate --env=staging --urgency=P0 --service=checkout-api --signal=latency --symptoms=5xx,timeout
+```
+
 ---
 
 ## Architecture

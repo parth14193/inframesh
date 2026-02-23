@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,10 @@ func BuiltinPolicies() []*Policy {
 		maxBlastRadiusPolicy(),
 		noDirectProdAccess(),
 		enforceEncryptionPolicy(),
+		requireExplicitProdConfirmationPolicy(),
+		prodCapacityImpactPolicy(),
+		requireChangeTicketPolicy(),
+		requireRollbackPlanPolicy(),
 	}
 }
 
@@ -216,5 +221,158 @@ func enforceEncryptionPolicy() *Policy {
 			}
 			return false, ""
 		},
+	}
+}
+
+func requireExplicitProdConfirmationPolicy() *Policy {
+	return &Policy{
+		Name:         "require_explicit_prod_confirmation",
+		Description:  "Mutating production actions require explicit confirmation flag",
+		Enforcement:  EnforcementDeny,
+		Severity:     SeverityCritical,
+		AppliesTo:    []string{"*"},
+		Environments: []string{"production", "prod", "prd"},
+		CheckFunc: func(skill *core.Skill, params map[string]interface{}, env string) (bool, string) {
+			if !isMutatingSkill(skill.Name) {
+				return false, ""
+			}
+			if !isConfirmed(params) {
+				return true, "Production mutation requires explicit confirmation: set _confirmed=true"
+			}
+			return false, ""
+		},
+	}
+}
+
+func prodCapacityImpactPolicy() *Policy {
+	return &Policy{
+		Name:         "prod_capacity_impact_limit",
+		Description:  "Deny production actions projected to impact more than 20% capacity",
+		Enforcement:  EnforcementDeny,
+		Severity:     SeverityCritical,
+		AppliesTo:    []string{"*"},
+		Environments: []string{"production", "prod", "prd"},
+		CheckFunc: func(skill *core.Skill, params map[string]interface{}, env string) (bool, string) {
+			if params == nil {
+				return false, ""
+			}
+			raw, ok := params["_capacity_impact_pct"]
+			if !ok {
+				return false, ""
+			}
+			pct, ok := asInt(raw)
+			if !ok {
+				return true, "_capacity_impact_pct must be an integer percentage"
+			}
+			if pct > 20 {
+				return true, fmt.Sprintf("Projected production capacity impact is %d%% (max allowed: 20%%)", pct)
+			}
+			return false, ""
+		},
+	}
+}
+
+func requireChangeTicketPolicy() *Policy {
+	return &Policy{
+		Name:         "require_change_ticket",
+		Description:  "Production mutations require a change ticket reference",
+		Enforcement:  EnforcementDeny,
+		Severity:     SeverityCritical,
+		AppliesTo:    []string{"*"},
+		Environments: []string{"production", "prod", "prd"},
+		CheckFunc: func(skill *core.Skill, params map[string]interface{}, env string) (bool, string) {
+			if !isMutatingSkill(skill.Name) {
+				return false, ""
+			}
+			if params == nil {
+				return true, "Production mutation requires _change_ticket (approved change request ID)"
+			}
+			raw, ok := params["_change_ticket"]
+			if !ok || strings.TrimSpace(fmt.Sprintf("%v", raw)) == "" || strings.EqualFold(fmt.Sprintf("%v", raw), "<nil>") {
+				return true, "Production mutation requires _change_ticket (approved change request ID)"
+			}
+			return false, ""
+		},
+	}
+}
+
+func requireRollbackPlanPolicy() *Policy {
+	return &Policy{
+		Name:         "require_rollback_plan",
+		Description:  "Production mutations require rollback procedure metadata",
+		Enforcement:  EnforcementDeny,
+		Severity:     SeverityCritical,
+		AppliesTo:    []string{"*"},
+		Environments: []string{"production", "prod", "prd"},
+		CheckFunc: func(skill *core.Skill, params map[string]interface{}, env string) (bool, string) {
+			if !isMutatingSkill(skill.Name) {
+				return false, ""
+			}
+			if skill.Rollback.Supported && strings.TrimSpace(skill.Rollback.Procedure) != "" {
+				return false, ""
+			}
+			if params != nil {
+				raw, ok := params["_rollback_plan"]
+				if ok && strings.TrimSpace(fmt.Sprintf("%v", raw)) != "" && !strings.EqualFold(fmt.Sprintf("%v", raw), "<nil>") {
+					return false, ""
+				}
+			}
+			if params == nil {
+				return true, "Production mutation must include rollback metadata via skill rollback config or _rollback_plan param"
+			}
+			return true, "Production mutation must include rollback metadata via skill rollback config or _rollback_plan param"
+		},
+	}
+}
+
+func isMutatingSkill(skillName string) bool {
+	name := strings.ToLower(skillName)
+	writeKeywords := []string{
+		".apply", ".deploy", ".scale", ".drain", ".delete", ".terminate", ".sync",
+		".migrate", ".update", ".upgrade", ".rollback", ".cordon", ".resize",
+	}
+	for _, keyword := range writeKeywords {
+		if strings.Contains(name, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func isConfirmed(params map[string]interface{}) bool {
+	if params == nil {
+		return false
+	}
+	confirmed, ok := params["_confirmed"]
+	if !ok {
+		return false
+	}
+
+	switch v := confirmed.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true")
+	default:
+		return false
+	}
+}
+
+func asInt(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
 	}
 }

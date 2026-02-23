@@ -83,3 +83,30 @@ func TestRunbookRender(t *testing.T) {
 		t.Error("render should produce output")
 	}
 }
+
+func TestP0RunbookExists(t *testing.T) {
+	e := runbook.NewEngine()
+	e.LoadBuiltins()
+	rb, err := e.Get("p0-incident-response")
+	if err != nil {
+		t.Fatalf("expected p0-incident-response runbook: %v", err)
+	}
+	if len(rb.Steps) < 7 {
+		t.Errorf("expected p0 runbook to have structured incident steps, got %d", len(rb.Steps))
+	}
+}
+
+func TestAutomanageRunbooksExist(t *testing.T) {
+	e := runbook.NewEngine()
+	e.LoadBuiltins()
+
+	for _, name := range []string{"reliability-guardrail-loop", "security-compliance-governance-cycle"} {
+		rb, err := e.Get(name)
+		if err != nil {
+			t.Fatalf("expected runbook %s: %v", name, err)
+		}
+		if len(rb.Steps) < 5 {
+			t.Errorf("expected %s to have at least 5 steps, got %d", name, len(rb.Steps))
+		}
+	}
+}
