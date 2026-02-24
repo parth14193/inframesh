@@ -134,6 +134,8 @@ InfraCore v2.0.0
 # Core
 infracore skills list --provider=aws
 infracore run aws.ec2.list --param region=us-west-2
+infracore run k8s.deploy --param namespace=default --param deployment=api --param image=api:v2 --force
+infracore run terraform.apply --env=production --param _confirmed=true --force
 infracore plan "deploy v2.5.0 to production"
 
 # Policy and Compliance

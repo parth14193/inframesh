@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -60,7 +61,7 @@ func (e *CLIExecutor) Execute(ctx context.Context, skill *core.Skill, params map
 	}
 
 	// Dry run mode
-	if e.dryRun || e.shouldDryRun(skill) {
+	if e.dryRun || e.shouldDryRun(skill, params) {
 		result.Status = core.StatusDryRun
 		result.Message = fmt.Sprintf("[DRY RUN] Would execute: %s", e.interpolateCommand(skill.Execution.Command, params))
 		result.Output["command"] = e.interpolateCommand(skill.Execution.Command, params)
@@ -156,8 +157,8 @@ func (e *CLIExecutor) hasConfirmation(params map[string]interface{}) bool {
 }
 
 // shouldDryRun checks if this skill type defaults to dry-run.
-func (e *CLIExecutor) shouldDryRun(skill *core.Skill) bool {
-	return skill.RiskLevel >= core.RiskHigh && !e.hasForce(nil)
+func (e *CLIExecutor) shouldDryRun(skill *core.Skill, params map[string]interface{}) bool {
+	return skill.RiskLevel >= core.RiskHigh && !e.hasForce(params)
 }
 
 // hasForce checks if force flag is set.
@@ -174,7 +175,7 @@ func (e *CLIExecutor) hasForce(params map[string]interface{}) bool {
 }
 
 func isWindows() bool {
-	return strings.Contains(strings.ToLower(fmt.Sprintf("%s", "os")), "windows")
+	return runtime.GOOS == "windows"
 }
 
 func truncate(s string, maxLen int) string {
