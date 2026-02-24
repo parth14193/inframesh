@@ -18,6 +18,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -30,6 +32,7 @@ import (
 	"github.com/parth14193/inframesh/pkg/config"
 	"github.com/parth14193/inframesh/pkg/core"
 	"github.com/parth14193/inframesh/pkg/drift"
+	"github.com/parth14193/inframesh/pkg/executor"
 	"github.com/parth14193/inframesh/pkg/health"
 	"github.com/parth14193/inframesh/pkg/output"
 	"github.com/parth14193/inframesh/pkg/planner"
@@ -261,6 +264,7 @@ func handleRun(args []string, registry *skills.Registry, renderer *output.Render
 	}
 	params := parseParams(args[1:])
 	env := stateManager.GetEnvironment()
+	forceExecution := hasFlag(args[1:], "--force")
 	if e := extractFlag(args[1:], "--env"); e != "" {
 		env = e
 		stateManager.SetEnvironment(env)
@@ -281,11 +285,31 @@ func handleRun(args []string, registry *skills.Registry, renderer *output.Render
 	fmt.Print(renderer.RenderSafetyReport(report))
 
 	stateManager.LoadSkill(skillName)
-	stateManager.AddToAuditLog(skillName, "evaluate",
-		fmt.Sprintf("%s/%s/%s", env, stateManager.GetProvider(), stateManager.GetRegion()),
-		core.StatusDryRun, skill.RiskLevel, "Safety evaluation completed — dry run mode")
-	fmt.Println()
-	fmt.Println(renderer.RenderSuccess(fmt.Sprintf("Skill '%s' evaluated in dry-run mode. Use --force to execute.", skillName)))
+	target := fmt.Sprintf("%s/%s/%s", env, stateManager.GetProvider(), stateManager.GetRegion())
+	if !forceExecution {
+		stateManager.AddToAuditLog(skillName, "evaluate", target, core.StatusDryRun, skill.RiskLevel, "Safety evaluation completed - dry run mode")
+		fmt.Println()
+		fmt.Println(renderer.RenderSuccess(fmt.Sprintf("Skill '%s' evaluated in dry-run mode. Use --force to execute.", skillName)))
+		return
+	}
+
+	params["_force"] = true
+	cliExecutor := executor.NewCLIExecutor(safetyLayer, false)
+	if workDir := extractFlag(args[1:], "--workdir"); workDir != "" {
+		cliExecutor.SetWorkDir(workDir)
+	}
+	execResult := cliExecutor.Execute(context.Background(), skill, params, env)
+	stateManager.AddToAuditLog(skillName, "execute", target, execResult.Status, skill.RiskLevel, execResult.Message)
+
+	fmt.Printf("EXECUTION RESULT: %s\n", strings.ToUpper(string(execResult.Status)))
+	switch execResult.Status {
+	case core.StatusSuccess, core.StatusDryRun:
+		fmt.Print(renderer.RenderSuccess(execResult.Message))
+	case core.StatusPending:
+		fmt.Print(renderer.RenderWarning(execResult.Message))
+	default:
+		fmt.Print(renderer.RenderError(errors.New(execResult.Message)))
+	}
 }
 
 // ─── Plan ─────────────────────────────────────────────────────
@@ -721,6 +745,15 @@ func extractFlag(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func parseParams(args []string) map[string]interface{} {
