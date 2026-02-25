@@ -10,8 +10,8 @@
 //	infracore state
 //	infracore discover --provider <p> --action <a>
 //	infracore policy list | infracore policy check <skill>
-//	infracore compliance audit <framework>
-//	infracore drift detect
+//	infracore compliance audit <framework> [--output=json|csv]
+//	infracore drift detect | infracore drift watch [--interval=15m]
 //	infracore runbook list | infracore runbook run <name>
 //	infracore health check
 //	infracore config show
@@ -137,6 +137,7 @@ PLATFORM COMMANDS:
   policy check     Check policies against a skill
   compliance audit Run compliance audit (CIS, SOC2, HIPAA)
   drift detect     Detect infrastructure drift
+  drift watch      Watch for infrastructure drift periodically
   runbook list     List operational runbooks
   runbook run      Execute or simulate a runbook
   health check     Run infrastructure health probes
@@ -151,13 +152,15 @@ OPTIONS:
   --param key=value   Set skill parameters
   --env=<env>         Set target environment
   --region=<r>        Set target region
+  --output=<f>        Export format (ascii, json, csv)
+  --interval=<d>      Watch interval (e.g. 5m, 1h)
 
 EXAMPLES:
   infracore skills list --provider=aws
   infracore run aws.ec2.list --param region=us-west-2
   infracore policy check k8s.deploy --env=production
-  infracore compliance audit CIS
-  infracore drift detect
+  infracore compliance audit CIS --output=json
+  infracore drift watch --interval=5m
   infracore runbook run deployment-rollback
   infracore health check
   infracore agent simulate --urgency=P0 --service=checkout-api --signal=latency --symptoms=5xx,timeout`)
@@ -547,32 +550,78 @@ func handlePolicy(args []string, pe *policy.Engine, registry *skills.Registry, r
 
 func handleCompliance(args []string, auditor *compliance.Auditor) {
 	if len(args) < 2 || args[0] != "audit" {
-		fmt.Println("Usage: infracore compliance audit <CIS|SOC2|HIPAA>")
+		fmt.Println("Usage: infracore compliance audit <CIS|SOC2|HIPAA> [--output=<ascii|json|csv>]")
 		return
 	}
 	fw := compliance.Framework(strings.ToUpper(args[1]))
+	formatStr := extractFlag(args[2:], "--output")
+	format, err := compliance.ParseOutputFormat(formatStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		return
+	}
+
 	report := auditor.RunAudit(fw)
-	fmt.Print(report.Render())
+	out, err := report.Export(format)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Export failed: %v\n", err)
+		return
+	}
+	fmt.Print(out)
 }
 
 // ─── Drift ────────────────────────────────────────────────────
 
 func handleDrift(args []string, detector *drift.Detector) {
-	if len(args) == 0 || args[0] != "detect" {
-		fmt.Println("Usage: infracore drift detect")
+	if len(args) == 0 {
+		fmt.Println("Usage: infracore drift <detect|watch> [options]")
 		return
 	}
-	// Demo drift detection with sample terraform plan output
-	samplePlan := `
+	switch args[0] {
+	case "detect":
+		// Demo drift detection with sample terraform plan output
+		samplePlan := `
 # aws_instance.web will be updated in-place
   ~ instance_type = "t3.micro" -> "t3.large"
 # aws_s3_bucket.logs will be created
 # aws_security_group.old will be destroyed
 `
-	report := detector.AnalyzeTerraformPlan(samplePlan)
-	report.Environment = "staging"
-	report.Region = "us-east-1"
-	fmt.Print(report.Render())
+		report := detector.AnalyzeTerraformPlan(samplePlan)
+		report.Environment = "staging"
+		report.Region = "us-east-1"
+		fmt.Print(report.Render())
+	case "watch":
+		intervalStr := extractFlag(args[1:], "--interval")
+		interval := 15 * time.Minute
+		if intervalStr != "" {
+			if d, err := time.ParseDuration(intervalStr); err == nil {
+				interval = d
+			}
+		}
+		fmt.Printf("🔭 Starting drift watch (interval: %v). Press Ctrl+C to stop.\n", interval)
+		watcher := drift.NewWatcher(detector, drift.WatchConfig{
+			Interval:    interval,
+			Environment: "production",
+			OnResult: func(res drift.WatchResult) {
+				if res.Err != nil {
+					fmt.Printf("[%s] ❌ Error: %v\n", res.RunAt.Format("15:04:05"), res.Err)
+					return
+				}
+				if res.Report.Drifted > 0 || res.Report.New > 0 || res.Report.Deleted > 0 {
+					fmt.Printf("[%s] ⚠️ Drift detected!\n%s\n", res.RunAt.Format("15:04:05"), res.Report.Render())
+				} else {
+					fmt.Printf("[%s] ✅ No drift.\n", res.RunAt.Format("15:04:05"))
+				}
+			},
+		})
+		_ = watcher.Start(context.Background())
+		// In a real CLI this would block or wait for signal.
+		// For simulation, we run one tick then exit after a brief wait if not interactive.
+		time.Sleep(2 * time.Second)
+		watcher.Stop()
+	default:
+		fmt.Fprintf(os.Stderr, "❌ Unknown drift subcommand: %s\n", args[0])
+	}
 }
 
 // ─── Runbook ──────────────────────────────────────────────────
@@ -792,4 +841,22 @@ func parseParamValue(value string) interface{} {
 		return i
 	}
 	return value
+}
+
+func deploymentRollbackRunbook() *runbook.Runbook {
+	return &runbook.Runbook{
+		Name:        "deployment-rollback",
+		Description: "Roll back a failed Kubernetes deployment and verify health",
+		Trigger:     runbook.TriggerManual,
+		Tags:        []string{"deployment", "k8s", "rollback"},
+		Steps: []runbook.Step{
+			{Name: "check-status", Type: runbook.StepSkill, SkillName: "k8s.rollout.status", Description: "Check current rollout status"},
+			{Name: "notify-team", Type: runbook.StepNotification, Description: "Alert team about rollback", Notification: "Initiating deployment rollback"},
+			{Name: "rollback", Type: runbook.StepSkill, SkillName: "k8s.rollback", Description: "Execute rollback to previous revision", OnFailure: "abort", MaxRetries: 2},
+			{Name: "wait-rollout", Type: runbook.StepWait, Description: "Wait for rollback container startup", WaitDuration: 30 * time.Second},
+			{Name: "health-gate", Type: runbook.StepHealthGate, Description: "Verify application endpoint is healthy before finishing", Timeout: 5 * time.Minute},
+			{Name: "verify-status", Type: runbook.StepSkill, SkillName: "k8s.rollout.status", Description: "Verify k8s rollout succeeded"},
+			{Name: "confirm", Type: runbook.StepNotification, Description: "Confirm rollback completion", Notification: "Rollback completed and health verified"},
+		},
+	}
 }

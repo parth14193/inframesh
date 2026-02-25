@@ -2,8 +2,12 @@ package skills
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/parth14193/inframesh/pkg/core"
+	"gopkg.in/yaml.v3"
 )
 
 // Discovery handles dynamic creation and registration of custom skills.
@@ -18,15 +22,15 @@ func NewDiscovery(registry *Registry) *Discovery {
 
 // SkillDefinition holds the raw definition for a custom skill.
 type SkillDefinition struct {
-	Name        string                `yaml:"name"`
-	Description string                `yaml:"description"`
-	Provider    string                `yaml:"provider"`
-	Category    string                `yaml:"category"`
-	Inputs      []SkillInputDef       `yaml:"inputs"`
-	Outputs     []SkillOutputDef      `yaml:"outputs"`
-	RiskLevel   string                `yaml:"risk_level"`
-	Execution   SkillExecutionDef     `yaml:"execution"`
-	Rollback    SkillRollbackDef      `yaml:"rollback"`
+	Name        string            `yaml:"name"`
+	Description string            `yaml:"description"`
+	Provider    string            `yaml:"provider"`
+	Category    string            `yaml:"category"`
+	Inputs      []SkillInputDef   `yaml:"inputs"`
+	Outputs     []SkillOutputDef  `yaml:"outputs"`
+	RiskLevel   string            `yaml:"risk_level"`
+	Execution   SkillExecutionDef `yaml:"execution"`
+	Rollback    SkillRollbackDef  `yaml:"rollback"`
 }
 
 // SkillInputDef defines a skill input in YAML format.
@@ -159,4 +163,81 @@ func (d *Discovery) GenerateTemplate(provider, action string) string {
     supported: false
     procedure: "How to undo this action"
 `, provider, action, provider)
+}
+
+// ─── YAML File Loader ──────────────────────────────────────────────────────
+
+// yamlSkillFile is the top-level YAML document structure.
+// Supports two forms:
+//
+//	Single skill:  { skill: { name: ..., ... } }
+//	Multi-skill:   { skills: [ { name: ..., ... }, ... ] }
+type yamlSkillFile struct {
+	Skill  *SkillDefinition  `yaml:"skill"`
+	Skills []SkillDefinition `yaml:"skills"`
+}
+
+// LoadFromYAMLFile reads a YAML file and registers all skills defined within it.
+// Returns the list of registered skill names and any error.
+func (d *Discovery) LoadFromYAMLFile(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("skills: cannot read file %q: %w", path, err)
+	}
+
+	var doc yamlSkillFile
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("skills: cannot parse %q: %w", path, err)
+	}
+
+	var defs []SkillDefinition
+	if doc.Skill != nil {
+		defs = append(defs, *doc.Skill)
+	}
+	defs = append(defs, doc.Skills...)
+
+	if len(defs) == 0 {
+		return nil, fmt.Errorf("skills: no skill definitions found in %q (use 'skill:' or 'skills:')", path)
+	}
+
+	var registered []string
+	for i := range defs {
+		def := &defs[i]
+		if err := d.Validate(def); err != nil {
+			return registered, fmt.Errorf("skills: invalid definition in %q (%s): %w", path, def.Name, err)
+		}
+		if _, err := d.CreateSkill(def); err != nil {
+			return registered, err
+		}
+		registered = append(registered, def.Name)
+	}
+	return registered, nil
+}
+
+// LoadFromYAMLDir scans a directory for *.yaml and *.yml files and loads
+// each one via LoadFromYAMLFile. Non-YAML files are silently ignored.
+// Returns the total count of skills registered and any first error encountered.
+func (d *Discovery) LoadFromYAMLDir(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("skills: cannot read directory %q: %w", dir, err)
+	}
+
+	total := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		names, err := d.LoadFromYAMLFile(path)
+		if err != nil {
+			return total, err
+		}
+		total += len(names)
+	}
+	return total, nil
 }

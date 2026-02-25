@@ -17,16 +17,17 @@ const (
 	StepWait         StepType = "wait"         // Wait for a duration
 	StepNotification StepType = "notification" // Send a notification
 	StepCondition    StepType = "condition"    // Conditional branching
+	StepHealthGate   StepType = "health_gate"  // Pause until health probes pass
 )
 
 // TriggerType defines what can trigger a runbook.
 type TriggerType string
 
 const (
-	TriggerManual    TriggerType = "manual"    // Operator starts it
-	TriggerAlert     TriggerType = "alert"     // Triggered by monitoring alert
-	TriggerSchedule  TriggerType = "schedule"  // Cron-scheduled
-	TriggerWebhook   TriggerType = "webhook"   // External system webhook
+	TriggerManual   TriggerType = "manual"   // Operator starts it
+	TriggerAlert    TriggerType = "alert"    // Triggered by monitoring alert
+	TriggerSchedule TriggerType = "schedule" // Cron-scheduled
+	TriggerWebhook  TriggerType = "webhook"  // External system webhook
 )
 
 // Step represents a single step in a runbook.
@@ -64,20 +65,20 @@ type Escalation struct {
 
 // ExecutionLog records the result of running a runbook.
 type ExecutionLog struct {
-	RunbookName string      `json:"runbook_name"`
-	StartedAt   time.Time   `json:"started_at"`
-	CompletedAt time.Time   `json:"completed_at"`
-	Status      string      `json:"status"` // completed, failed, aborted
+	RunbookName string       `json:"runbook_name"`
+	StartedAt   time.Time    `json:"started_at"`
+	CompletedAt time.Time    `json:"completed_at"`
+	Status      string       `json:"status"` // completed, failed, aborted
 	StepResults []StepResult `json:"step_results"`
 }
 
 // StepResult records the result of a single runbook step.
 type StepResult struct {
-	StepName  string        `json:"step_name"`
-	Status    string        `json:"status"`
-	Duration  time.Duration `json:"duration"`
-	Output    string        `json:"output"`
-	Error     string        `json:"error,omitempty"`
+	StepName string        `json:"step_name"`
+	Status   string        `json:"status"`
+	Duration time.Duration `json:"duration"`
+	Output   string        `json:"output"`
+	Error    string        `json:"error,omitempty"`
 }
 
 // Engine manages and executes runbooks.
@@ -174,6 +175,8 @@ func (e *Engine) SimulateRun(rb *Runbook) *ExecutionLog {
 			result.Output = fmt.Sprintf("Would send notification: %s", step.Notification)
 		case StepCondition:
 			result.Output = fmt.Sprintf("Would evaluate condition: %s", step.Condition)
+		case StepHealthGate:
+			result.Output = fmt.Sprintf("Would wait for health gate: %s", step.Name)
 		}
 
 		log.StepResults = append(log.StepResults, result)
@@ -247,16 +250,17 @@ func diskFullRunbook() *Runbook {
 func deploymentRollbackRunbook() *Runbook {
 	return &Runbook{
 		Name:        "deployment-rollback",
-		Description: "Roll back a failed Kubernetes deployment",
+		Description: "Roll back a failed Kubernetes deployment and verify health",
 		Trigger:     TriggerManual,
 		Tags:        []string{"deployment", "k8s", "rollback"},
 		Steps: []Step{
 			{Name: "check-status", Type: StepSkill, SkillName: "k8s.rollout.status", Description: "Check current rollout status"},
 			{Name: "notify-team", Type: StepNotification, Description: "Alert team about rollback", Notification: "Initiating deployment rollback"},
 			{Name: "rollback", Type: StepSkill, SkillName: "k8s.rollback", Description: "Execute rollback to previous revision", OnFailure: "abort", MaxRetries: 2},
-			{Name: "wait-rollout", Type: StepWait, Description: "Wait for rollback to complete", WaitDuration: 2 * time.Minute},
-			{Name: "verify-status", Type: StepSkill, SkillName: "k8s.rollout.status", Description: "Verify rollback succeeded"},
-			{Name: "confirm", Type: StepNotification, Description: "Confirm rollback completion", Notification: "Rollback completed — verify application health"},
+			{Name: "wait-rollout", Type: StepWait, Description: "Wait for rollback container startup", WaitDuration: 30 * time.Second},
+			{Name: "health-gate", Type: StepHealthGate, Description: "Verify application endpoint is healthy before finishing", Timeout: 5 * time.Minute},
+			{Name: "verify-status", Type: StepSkill, SkillName: "k8s.rollout.status", Description: "Verify k8s rollout succeeded"},
+			{Name: "confirm", Type: StepNotification, Description: "Confirm rollback completion", Notification: "Rollback completed and health verified"},
 		},
 	}
 }
@@ -419,6 +423,8 @@ func stepIcon(t StepType) string {
 		return "🔔"
 	case StepCondition:
 		return "🔀"
+	case StepHealthGate:
+		return "❤️"
 	default:
 		return "📋"
 	}

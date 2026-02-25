@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/rbac"
+	"github.com/parth14193/inframesh/pkg/resilience"
 	"github.com/parth14193/inframesh/pkg/safety"
 )
 
@@ -20,11 +22,23 @@ type Executor interface {
 	Execute(ctx context.Context, skill *core.Skill, params map[string]interface{}, env string) *core.ExecutionResult
 }
 
+// RBACChecker is the subset of rbac.Engine used by the executor.
+// Keeping it as an interface allows tests to substitute a mock.
+type RBACChecker interface {
+	CanExecute(username string, skill *core.Skill, env string) (bool, string)
+}
+
+// Ensure rbac.Engine satisfies the interface at compile time.
+var _ RBACChecker = (*rbac.Engine)(nil)
+
 // CLIExecutor runs skills by shelling out to cloud CLI tools.
 type CLIExecutor struct {
 	safetyLayer *safety.Layer
 	dryRun      bool
 	workDir     string
+	rbacEngine  RBACChecker
+	activeUser  string
+	retryPolicy *resilience.RetryPolicy
 }
 
 // NewCLIExecutor creates a new CLIExecutor.
@@ -33,6 +47,22 @@ func NewCLIExecutor(safetyLayer *safety.Layer, dryRun bool) *CLIExecutor {
 		safetyLayer: safetyLayer,
 		dryRun:      dryRun,
 	}
+}
+
+// WithRBAC attaches an RBAC engine and the calling operator's username.
+// When set, every Execute call is gated by role-based access control before
+// any safety or dry-run checks are applied.
+func (e *CLIExecutor) WithRBAC(engine *rbac.Engine, username string) *CLIExecutor {
+	e.rbacEngine = engine
+	e.activeUser = username
+	return e
+}
+
+// WithRetryPolicy attaches a resilience retry policy used to retry transient command failures.
+// Use resilience.DefaultRetryPolicy() for sensible defaults.
+func (e *CLIExecutor) WithRetryPolicy(policy *resilience.RetryPolicy) *CLIExecutor {
+	e.retryPolicy = policy
+	return e
 }
 
 // SetWorkDir sets the working directory for command execution.
@@ -49,7 +79,18 @@ func (e *CLIExecutor) Execute(ctx context.Context, skill *core.Skill, params map
 		Output:    make(map[string]interface{}),
 	}
 
-	// Safety check
+	// ── 1. RBAC check — first gate, cheapest to evaluate. ────────────────
+	if e.rbacEngine != nil {
+		if allowed, reason := e.rbacEngine.CanExecute(e.activeUser, skill, env); !allowed {
+			result.Status = core.StatusCancelled
+			result.Error = "rbac_denied"
+			result.Message = fmt.Sprintf("🚫 RBAC: %s", reason)
+			result.Duration = time.Since(start)
+			return result
+		}
+	}
+
+	// ── 2. Safety check ──────────────────────────────────────────────────
 	if e.safetyLayer != nil {
 		report := e.safetyLayer.Evaluate(skill, params, env)
 		if report.RequiresConfirmation && !e.hasConfirmation(params) {
@@ -60,7 +101,7 @@ func (e *CLIExecutor) Execute(ctx context.Context, skill *core.Skill, params map
 		}
 	}
 
-	// Dry run mode
+	// ── 3. Dry run mode ──────────────────────────────────────────────────
 	if e.dryRun || e.shouldDryRun(skill, params) {
 		result.Status = core.StatusDryRun
 		result.Message = fmt.Sprintf("[DRY RUN] Would execute: %s", e.interpolateCommand(skill.Execution.Command, params))
@@ -70,7 +111,7 @@ func (e *CLIExecutor) Execute(ctx context.Context, skill *core.Skill, params map
 		return result
 	}
 
-	// Build and execute the command
+	// ── 4. Build and execute the command (with optional retry) ───────────
 	command := e.interpolateCommand(skill.Execution.Command, params)
 	timeout := skill.Execution.Timeout
 	if timeout == 0 {
@@ -80,7 +121,26 @@ func (e *CLIExecutor) Execute(ctx context.Context, skill *core.Skill, params map
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	stdout, stderr, exitCode, err := e.runCommand(cmdCtx, command)
+	var stdout, stderr string
+	var exitCode int
+	var err error
+
+	if e.retryPolicy != nil {
+		// Wrap the command in a retryable function.
+		result2 := resilience.WithRetry(e.retryPolicy, func() error {
+			stdout, stderr, exitCode, err = e.runCommand(cmdCtx, command)
+			// Only signal retry for transient errors; permanent failures stop.
+			if err != nil && isTransientError(exitCode, stderr) {
+				return err
+			}
+			return nil
+		})
+		if !result2.Succeeded && err == nil {
+			err = fmt.Errorf("command failed after %d attempts: %s", result2.Attempts, result2.LastError)
+		}
+	} else {
+		stdout, stderr, exitCode, err = e.runCommand(cmdCtx, command)
+	}
 
 	result.Duration = time.Since(start)
 	result.Output["stdout"] = stdout
@@ -174,6 +234,19 @@ func (e *CLIExecutor) hasForce(params map[string]interface{}) bool {
 	return false
 }
 
+// isTransientError returns true for exit codes that suggest temporary infra issues.
+func isTransientError(exitCode int, stderr string) bool {
+	if exitCode == -1 {
+		return true // execution error (e.g. binary not found) — don't retry
+	}
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "timeout") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "network") ||
+		strings.Contains(s, "throttl") ||
+		strings.Contains(s, "rate limit")
+}
+
 func isWindows() bool {
 	return runtime.GOOS == "windows"
 }
@@ -210,8 +283,8 @@ func (e *DryRunExecutor) Execute(_ context.Context, skill *core.Skill, params ma
 		Output: map[string]interface{}{
 			"command":     cmd,
 			"environment": env,
-			"params":     params,
-			"risk_level": skill.RiskLevel.String(),
+			"params":      params,
+			"risk_level":  skill.RiskLevel.String(),
 		},
 		Message:   fmt.Sprintf("[DRY RUN] Would execute: %s (env=%s, risk=%s)", cmd, env, skill.RiskLevel),
 		Duration:  time.Since(start),
@@ -223,9 +296,9 @@ func (e *DryRunExecutor) Execute(_ context.Context, skill *core.Skill, params ma
 
 // CompositeExecutor chains multiple executors with pre/post hooks.
 type CompositeExecutor struct {
-	primary    Executor
-	preHooks   []ExecutionHook
-	postHooks  []ExecutionHook
+	primary   Executor
+	preHooks  []ExecutionHook
+	postHooks []ExecutionHook
 }
 
 // ExecutionHook is called before or after skill execution.
