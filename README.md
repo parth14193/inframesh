@@ -137,6 +137,7 @@ infracore run aws.ec2.list --param region=us-west-2
 infracore run k8s.deploy --param namespace=default --param deployment=api --param image=api:v2 --force
 infracore run terraform.apply --env=production --param _confirmed=true --force
 infracore plan "deploy v2.5.0 to production"
+infracore plan execute deploy eks service --env=staging --force
 
 # Policy and Compliance
 infracore policy list

@@ -121,3 +121,43 @@ func TestPopulatePlanFromDescription_AWSGenericServiceDeploy(t *testing.T) {
 		t.Fatalf("expected first step aws.service.deploy, got %s", plan.Steps[0].SkillName)
 	}
 }
+
+func TestExtractPlanDescription(t *testing.T) {
+	args := []string{
+		"deploy", "eks", "service",
+		"--env=staging",
+		"--force",
+		"--param", "image=api:v2",
+		"team=platform",
+	}
+
+	got := extractPlanDescription(args)
+	if got != "deploy eks service" {
+		t.Fatalf("expected description to exclude flags and params, got %q", got)
+	}
+}
+
+func TestMergeParams(t *testing.T) {
+	base := map[string]interface{}{
+		"namespace": "default",
+		"replicas":  2,
+	}
+	overrides := map[string]interface{}{
+		"replicas":   3,
+		"_confirmed": true,
+	}
+
+	merged := mergeParams(base, overrides)
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 merged params, got %d", len(merged))
+	}
+	if merged["namespace"] != "default" {
+		t.Fatalf("expected namespace=default, got %v", merged["namespace"])
+	}
+	if merged["replicas"] != 3 {
+		t.Fatalf("expected replicas override=3, got %v", merged["replicas"])
+	}
+	if merged["_confirmed"] != true {
+		t.Fatalf("expected _confirmed=true, got %v", merged["_confirmed"])
+	}
+}
