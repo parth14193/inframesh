@@ -7,6 +7,7 @@
 //	infracore skills info <skill_name>
 //	infracore run <skill_name> [--param key=value ...]
 //	infracore plan <description>
+//	infracore plan execute <description> [--force] [--env=<env>] [--param key=value ...]
 //	infracore state
 //	infracore discover --provider <p> --action <a>
 //	infracore policy list | infracore policy check <skill>
@@ -28,12 +29,16 @@ import (
 	"time"
 
 	"github.com/parth14193/inframesh/pkg/agents"
+	"github.com/parth14193/inframesh/pkg/approval"
 	"github.com/parth14193/inframesh/pkg/compliance"
 	"github.com/parth14193/inframesh/pkg/config"
 	"github.com/parth14193/inframesh/pkg/core"
+	"github.com/parth14193/inframesh/pkg/cost"
 	"github.com/parth14193/inframesh/pkg/drift"
+	"github.com/parth14193/inframesh/pkg/eventbus"
 	"github.com/parth14193/inframesh/pkg/executor"
 	"github.com/parth14193/inframesh/pkg/health"
+	"github.com/parth14193/inframesh/pkg/history"
 	"github.com/parth14193/inframesh/pkg/output"
 	"github.com/parth14193/inframesh/pkg/planner"
 	"github.com/parth14193/inframesh/pkg/policy"
@@ -42,6 +47,7 @@ import (
 	"github.com/parth14193/inframesh/pkg/safety"
 	"github.com/parth14193/inframesh/pkg/skills"
 	"github.com/parth14193/inframesh/pkg/state"
+	"github.com/parth14193/inframesh/pkg/topology"
 )
 
 const version = "2.0.0"
@@ -74,6 +80,10 @@ func main() {
 	auditor := compliance.NewAuditor()
 	auditor.LoadAll()
 	driftDetector := drift.NewDetector()
+	bus := eventbus.New()
+	historyStore := history.NewStore()
+	costEstimator := cost.NewEstimator()
+	approvalMgr := approval.NewManager()
 
 	switch os.Args[1] {
 	case "skills":
@@ -81,7 +91,7 @@ func main() {
 	case "run":
 		handleRun(os.Args[2:], registry, renderer, safetyLayer, stateManager, policyEngine)
 	case "plan":
-		handlePlan(os.Args[2:], renderer, planEngine)
+		handlePlan(os.Args[2:], registry, renderer, planEngine, safetyLayer, stateManager, policyEngine)
 	case "state":
 		handleState(renderer, stateManager)
 	case "discover":
@@ -102,6 +112,16 @@ func main() {
 		handleRBAC(os.Args[2:], rbacEngine)
 	case "agent":
 		handleAgent(os.Args[2:], renderer)
+	case "history":
+		handleHistory(os.Args[2:], historyStore)
+	case "cost":
+		handleCost(os.Args[2:], costEstimator, registry, renderer)
+	case "approval":
+		handleApproval(os.Args[2:], approvalMgr)
+	case "topology":
+		handleTopology(os.Args[2:], registry)
+	case "events":
+		fmt.Print(bus.Render())
 	case "version":
 		fmt.Printf("InfraCore Agent Framework v%s\n", version)
 	case "help", "--help", "-h":
@@ -128,7 +148,7 @@ CORE COMMANDS:
   skills search    Search skills by query
   skills info      Show detailed skill information
   run              Execute a skill (dry-run by default)
-  plan             Create a multi-step execution plan
+  plan             Create or execute a multi-step execution plan
   state            Show current session state
   discover         Enter skill discovery mode
 
@@ -145,6 +165,18 @@ PLATFORM COMMANDS:
   rbac show        Show RBAC roles and users
   agent simulate   Run multi-agent controller simulation
 
+ENTERPRISE COMMANDS:
+  history list     Show execution history [--skill=X] [--status=X] [--env=X] [--last=N]
+  history stats    Show execution statistics
+  cost estimate    Estimate cost of a skill [--param key=value ...]
+  approval list    Show approval requests
+  approval approve Approve a pending request
+  approval reject  Reject a pending request
+  topology show    Show infrastructure skill topology [--provider=X]
+  topology mermaid Export topology as Mermaid diagram
+  topology stats   Show topology statistics
+  events           Show event bus status
+
 OPTIONS:
   --provider=<p>      Filter by provider
   --category=<c>      Filter by category
@@ -155,12 +187,20 @@ OPTIONS:
 EXAMPLES:
   infracore skills list --provider=aws
   infracore run aws.ec2.list --param region=us-west-2
+  infracore plan execute deploy eks service --force --env=staging
   infracore policy check k8s.deploy --env=production
   infracore compliance audit CIS
   infracore drift detect
   infracore runbook run deployment-rollback
   infracore health check
-  infracore agent simulate --urgency=P0 --service=checkout-api --signal=latency --symptoms=5xx,timeout`)
+  infracore agent simulate --urgency=P0 --service=checkout-api --signal=latency --symptoms=5xx,timeout
+  infracore history list --last=10
+  infracore history stats
+  infracore cost estimate aws.ec2.deploy --param instance_type=m6i.large
+  infracore approval list
+  infracore topology show --provider=aws
+  infracore topology mermaid
+  infracore topology stats`)
 }
 
 // ─── Skills ───────────────────────────────────────────────────
@@ -314,9 +354,14 @@ func handleRun(args []string, registry *skills.Registry, renderer *output.Render
 
 // ─── Plan ─────────────────────────────────────────────────────
 
-func handlePlan(args []string, renderer *output.Renderer, planEngine *planner.Engine) {
+func handlePlan(args []string, registry *skills.Registry, renderer *output.Renderer, planEngine *planner.Engine, safetyLayer *safety.Layer, stateManager *state.Manager, pe *policy.Engine) {
 	if len(args) == 0 {
 		fmt.Println("Usage: infracore plan <description>")
+		fmt.Println("       infracore plan execute <description> [--force] [--env=<env>] [--workdir=<dir>] [--param key=value ...]")
+		return
+	}
+	if args[0] == "execute" || args[0] == "run" {
+		handlePlanExecute(args[1:], registry, renderer, planEngine, safetyLayer, stateManager, pe)
 		return
 	}
 	description := strings.Join(args, " ")
@@ -326,6 +371,126 @@ func handlePlan(args []string, renderer *output.Renderer, planEngine *planner.En
 		return
 	}
 	fmt.Print(renderer.RenderPlan(plan))
+}
+
+func handlePlanExecute(args []string, registry *skills.Registry, renderer *output.Renderer, planEngine *planner.Engine, safetyLayer *safety.Layer, stateManager *state.Manager, pe *policy.Engine) {
+	if len(args) == 0 {
+		fmt.Println("Usage: infracore plan execute <description> [--force] [--env=<env>] [--workdir=<dir>] [--param key=value ...]")
+		return
+	}
+
+	description := extractPlanDescription(args)
+	if description == "" {
+		fmt.Println("Usage: infracore plan execute <description> [--force] [--env=<env>] [--workdir=<dir>] [--param key=value ...]")
+		return
+	}
+
+	plan := planEngine.CreatePlan("Execution Plan", description)
+	if !populatePlanFromDescription(planEngine, plan, description) {
+		fmt.Printf("ðŸ“‹ Plan requested: %s\n\nCould not auto-generate. Use 'infracore skills list'.\n", description)
+		return
+	}
+	fmt.Print(renderer.RenderPlan(plan))
+
+	if errs := planEngine.Validate(plan); len(errs) > 0 {
+		fmt.Printf("PLAN VALIDATION FAILED (%d)\n", len(errs))
+		for _, err := range errs {
+			fmt.Printf("  - %v\n", err)
+		}
+		return
+	}
+
+	if !hasFlag(args, "--force") {
+		fmt.Println(renderer.RenderWarning("Plan generated but not executed. Re-run with --force to execute all steps."))
+		return
+	}
+
+	env := stateManager.GetEnvironment()
+	if e := extractFlag(args, "--env"); e != "" {
+		env = e
+		stateManager.SetEnvironment(env)
+	}
+
+	params := parseParams(args)
+	stopOnError := !hasFlag(args, "--continue-on-error")
+
+	cliExecutor := executor.NewCLIExecutor(safetyLayer, false)
+	if workDir := extractFlag(args, "--workdir"); workDir != "" {
+		cliExecutor.SetWorkDir(workDir)
+	}
+
+	executed := 0
+	skipped := 0
+	failed := 0
+	for _, step := range plan.Steps {
+		if step.SkillName == "CONDITIONAL" {
+			skipped++
+			fmt.Printf("STEP %d SKIPPED: conditional steps are not auto-evaluated (%s)\n", step.StepNumber, step.Description)
+			continue
+		}
+
+		skill, err := registry.Get(step.SkillName)
+		if err != nil {
+			failed++
+			fmt.Printf("STEP %d FAILED: %v\n", step.StepNumber, err)
+			if stopOnError {
+				break
+			}
+			continue
+		}
+
+		stateManager.SetProvider(skill.Provider)
+		stepParams := mergeParams(step.Params, params)
+		target := fmt.Sprintf("%s/%s/%s", env, skill.Provider, stateManager.GetRegion())
+
+		policyResult := pe.Evaluate(skill, stepParams, env)
+		if !policyResult.Passed {
+			failed++
+			stateManager.AddToAuditLog(skill.Name, "plan-execute", target, core.StatusFailed, skill.RiskLevel, "Blocked by policy")
+			fmt.Print(policyResult.Render())
+			if stopOnError {
+				break
+			}
+			continue
+		}
+		if len(policyResult.Warnings) > 0 {
+			fmt.Print(policyResult.Render())
+		}
+
+		stepParams["_force"] = true
+		report := safetyLayer.Evaluate(skill, stepParams, env)
+		fmt.Printf("STEP %d/%d: %s\n", step.StepNumber, len(plan.Steps), skill.Name)
+		fmt.Print(renderer.RenderSafetyReport(report))
+
+		execResult := cliExecutor.Execute(context.Background(), skill, stepParams, env)
+		stateManager.LoadSkill(skill.Name)
+		stateManager.AddToAuditLog(skill.Name, "plan-execute", target, execResult.Status, skill.RiskLevel, execResult.Message)
+		executed++
+
+		switch execResult.Status {
+		case core.StatusSuccess, core.StatusDryRun:
+			fmt.Print(renderer.RenderSuccess(execResult.Message))
+		case core.StatusPending:
+			failed++
+			fmt.Print(renderer.RenderWarning(execResult.Message))
+			if stopOnError {
+				break
+			}
+		default:
+			failed++
+			fmt.Print(renderer.RenderError(errors.New(execResult.Message)))
+			if stopOnError {
+				break
+			}
+		}
+	}
+
+	fmt.Printf("\nPLAN EXECUTION SUMMARY: executed=%d skipped=%d failed=%d total=%d\n", executed, skipped, failed, len(plan.Steps))
+	if failed == 0 {
+		fmt.Print(renderer.RenderSuccess("Plan execution completed successfully"))
+		return
+	}
+	fmt.Print(renderer.RenderWarning("Plan execution completed with failures"))
 }
 
 func populatePlanFromDescription(planEngine *planner.Engine, plan *core.Plan, description string) bool {
@@ -756,6 +921,37 @@ func hasFlag(args []string, flag string) bool {
 	return false
 }
 
+func extractPlanDescription(args []string) string {
+	parts := make([]string, 0, len(args))
+	skipNext := false
+	for _, arg := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if arg == "--param" {
+			skipNext = true
+			continue
+		}
+		if strings.HasPrefix(arg, "--") || strings.Contains(arg, "=") {
+			continue
+		}
+		parts = append(parts, arg)
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func mergeParams(base map[string]interface{}, overrides map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{}, len(base)+len(overrides))
+	for key, value := range base {
+		result[key] = value
+	}
+	for key, value := range overrides {
+		result[key] = value
+	}
+	return result
+}
+
 func parseParams(args []string) map[string]interface{} {
 	params := make(map[string]interface{})
 	for _, arg := range args {
@@ -792,4 +988,178 @@ func parseParamValue(value string) interface{} {
 		return i
 	}
 	return value
+}
+
+// ─── History ──────────────────────────────────────────────────
+
+func handleHistory(args []string, store *history.Store) {
+	if len(args) == 0 {
+		fmt.Println("Usage: infracore history <list|stats> [options]")
+		return
+	}
+	switch args[0] {
+	case "list":
+		query := history.SearchQuery{
+			Skill:  extractFlag(args[1:], "--skill"),
+			Status: extractFlag(args[1:], "--status"),
+			Env:    extractFlag(args[1:], "--env"),
+		}
+		if lastStr := extractFlag(args[1:], "--last"); lastStr != "" {
+			if n, err := strconv.Atoi(lastStr); err == nil {
+				query.Last = n
+			}
+		}
+		if query.Last == 0 {
+			query.Last = 25
+		}
+		records := store.Search(query)
+		fmt.Print(history.RenderRecords(records))
+	case "stats":
+		stats := store.GetStats()
+		fmt.Print(history.RenderStats(stats))
+	case "replay":
+		if len(args) < 2 {
+			fmt.Println("Usage: infracore history replay <id>")
+			return
+		}
+		record, err := store.GetByID(args[1])
+		if err != nil {
+			fmt.Printf("❌ %v\n", err)
+			return
+		}
+		fmt.Printf("📜 REPLAY RECORD: %s\n", record.ID)
+		fmt.Printf("  Skill:       %s\n", record.SkillName)
+		fmt.Printf("  Environment: %s\n", record.Environment)
+		fmt.Printf("  Provider:    %s\n", record.Provider)
+		fmt.Printf("  Status:      %s\n", record.Status)
+		fmt.Printf("  Duration:    %s\n", record.Duration)
+		fmt.Printf("  Timestamp:   %s\n", record.Timestamp.Format(time.RFC3339))
+		if record.Message != "" {
+			fmt.Printf("  Message:     %s\n", record.Message)
+		}
+		if len(record.Params) > 0 {
+			fmt.Printf("  Params:\n")
+			for k, v := range record.Params {
+				fmt.Printf("    %s = %v\n", k, v)
+			}
+		}
+		fmt.Println("\n💡 To re-run: infracore run", record.SkillName, "--force --env="+record.Environment)
+	default:
+		fmt.Fprintf(os.Stderr, "❌ Unknown history subcommand: %s\n", args[0])
+	}
+}
+
+// ─── Cost ─────────────────────────────────────────────────────
+
+func handleCost(args []string, estimator *cost.Estimator, registry *skills.Registry, renderer *output.Renderer) {
+	if len(args) < 2 || args[0] != "estimate" {
+		fmt.Println("Usage: infracore cost estimate <skill_name> [--param key=value ...]")
+		return
+	}
+	skillName := args[1]
+	skill, err := registry.Get(skillName)
+	if err != nil {
+		fmt.Println(renderer.RenderError(err))
+		return
+	}
+	params := parseParams(args[2:])
+	est := estimator.EstimateSkill(skill, params)
+	fmt.Print(cost.RenderEstimate(est))
+}
+
+// ─── Approval ─────────────────────────────────────────────────
+
+func handleApproval(args []string, mgr *approval.Manager) {
+	if len(args) == 0 {
+		fmt.Println("Usage: infracore approval <list|approve|reject> [options]")
+		return
+	}
+	switch args[0] {
+	case "list":
+		requests := mgr.ListAll()
+		fmt.Print(approval.RenderRequests(requests))
+		pending, approved, rejected := mgr.Count()
+		fmt.Printf("  Summary: %d pending, %d approved, %d rejected\n", pending, approved, rejected)
+	case "pending":
+		requests := mgr.ListPending()
+		fmt.Print(approval.RenderRequests(requests))
+	case "approve":
+		if len(args) < 2 {
+			fmt.Println("Usage: infracore approval approve <id> [--approver=<name>]")
+			return
+		}
+		approver := extractFlag(args[2:], "--approver")
+		if approver == "" {
+			approver = "cli-user"
+		}
+		req, err := mgr.Approve(args[1], approver)
+		if err != nil {
+			fmt.Printf("❌ %v\n", err)
+			return
+		}
+		fmt.Printf("✅ Request %s approved by %s\n", req.ID, req.Approver)
+		fmt.Printf("   Skill: %s | Env: %s | Risk: %s\n", req.SkillName, req.Environment, req.RiskLevel)
+	case "reject":
+		if len(args) < 2 {
+			fmt.Println("Usage: infracore approval reject <id> [--reason=<reason>]")
+			return
+		}
+		reason := extractFlag(args[2:], "--reason")
+		if reason == "" {
+			reason = "rejected via CLI"
+		}
+		req, err := mgr.Reject(args[1], reason)
+		if err != nil {
+			fmt.Printf("❌ %v\n", err)
+			return
+		}
+		fmt.Printf("❌ Request %s rejected: %s\n", req.ID, req.RejectReason)
+	case "request":
+		if len(args) < 2 {
+			fmt.Println("Usage: infracore approval request <skill_name> --env=<env> [--reason=<reason>]")
+			return
+		}
+		env := extractFlag(args[2:], "--env")
+		if env == "" {
+			env = "production"
+		}
+		reason := extractFlag(args[2:], "--reason")
+		req, err := mgr.CreateRequest(args[1], env, "cli-user", reason, core.RiskHigh, nil)
+		if err != nil {
+			fmt.Printf("❌ %v\n", err)
+			return
+		}
+		fmt.Printf("⏳ Approval request created: %s\n", req.ID)
+		fmt.Printf("   Skill: %s | Env: %s | Expires: %s\n", req.SkillName, req.Environment, req.ExpiresAt.Format(time.RFC3339))
+		fmt.Printf("   Token: %s\n", req.Token)
+	default:
+		fmt.Fprintf(os.Stderr, "❌ Unknown approval subcommand: %s\n", args[0])
+	}
+}
+
+// ─── Topology ─────────────────────────────────────────────────
+
+func handleTopology(args []string, registry *skills.Registry) {
+	if len(args) == 0 {
+		fmt.Println("Usage: infracore topology <show|mermaid|stats> [--provider=X]")
+		return
+	}
+
+	graph := topology.BuildFromRegistry(registry)
+
+	// Optional provider filter
+	if provider := extractFlag(args, "--provider"); provider != "" {
+		graph = graph.FilterByProvider(core.Provider(provider))
+	}
+
+	switch args[0] {
+	case "show":
+		fmt.Print(graph.RenderCLI())
+	case "mermaid":
+		fmt.Print(graph.RenderMermaid())
+	case "stats":
+		fmt.Print(graph.RenderStats())
+	default:
+		fmt.Fprintf(os.Stderr, "❌ Unknown topology subcommand: %s\n", args[0])
+	}
 }
